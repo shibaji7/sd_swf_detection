@@ -14,6 +14,7 @@ __status__ = "Research"
 import os
 import numpy as np
 import glob
+import pandas as pd
 
 import plotlib
 
@@ -44,7 +45,7 @@ def create_backscatter_echoes(base=15, beams=range(4,24),
                 scale=noise_params["sigma"], size=dur).astype(int) 
     return _o
 
-def generate_backscatter_echoes(echo={"loc":20,"scale":5,"samples":100}, 
+def generate_backscatter_echoes(echo={"loc":20,"scale":5,"samples":50}, 
         noise={"loc":2,"scale":1,"samples":10}, seed=0, dur=120, beams=range(4,24), 
         base_dir="../data/raw/", fname="dat_%04d_%03d.txt", clean=True, plot=False):
     if clean: os.system("rm -rf " + base_dir + "*")
@@ -76,10 +77,10 @@ def generate_backscatter_damp_function(dur=120, seed=0, base_dir="../data/damp/"
         plot=False):
     if clean: os.system("rm -rf " + base_dir + "*")
     np.random.seed(seed)
-    flare_time_location_distribution = np.random.uniform(10, 90, 25).astype(int)
-    percentage_drop_ditsribution = np.round(np.random.uniform(0.5, 2., 10), 2)
-    drop_rate_distribution = np.round(np.random.normal(3, .5, 10), 2)
-    gain_rate_distribution = np.round(np.random.uniform(5e-2, 1e-1, 10), 2)
+    flare_time_location_distribution = np.random.uniform(10, 90, size=15).astype(int)
+    percentage_drop_ditsribution = np.round(np.random.uniform(0.5, 2., size=5), 2)
+    drop_rate_distribution = np.round(np.random.normal(3, .5, size=5), 2)
+    gain_rate_distribution = np.round(np.random.uniform(5e-2, 1e-1, size=5), 2)
     for f in flare_time_location_distribution:
         for p in percentage_drop_ditsribution:
             for dr in drop_rate_distribution:
@@ -93,10 +94,13 @@ def generate_backscatter_damp_function(dur=120, seed=0, base_dir="../data/damp/"
 
 def create_train_test_dataset(raw_dir="../data/raw/", damp_dir="../data/damp/", train_dir="../data/train/", 
         test_dir="../data/test/", validation_dir="../data/validation/"):
+    os.system("rm -rf " + train_dir + "*")
+    os.system("rm -rf " + test_dir + "*")
+    os.system("rm -rf " + validation_dir + "*")
     raw_files = glob.glob(raw_dir + "*.txt")
     damp_files = glob.glob(damp_dir + "*.txt")
     print(" Total combinations: %d [%d X %d]"%(len(damp_files)*len(raw_files), len(raw_files), len(damp_files)))
-    dmap = {"fname":[], "obj": []}
+    dmap = {"fname":[], "obj": [], "params": []}
     for rfile in raw_files:
         r_dat = np.loadtxt(rfile)
         for dfile in damp_files:
@@ -110,6 +114,10 @@ def create_train_test_dataset(raw_dir="../data/raw/", damp_dir="../data/damp/", 
                 fname = fname.replace(".txt", params)
                 dmap["fname"].append(fname)
                 dmap["obj"].append(o)
+                params = params.replace(".txt","").split("_")
+                end = np.argmin(abs(d_dat[int(params[2]):]-0.92)) + int(params[2])
+                pobj = {"start": int(params[2]), "end": end, "peak": float(params[3]), "swf_flag": True}
+                dmap["params"].append(pobj)
             else:
                 o = np.copy(r_dat)
                 fname = rfile.split("/")[-1]
@@ -117,8 +125,21 @@ def create_train_test_dataset(raw_dir="../data/raw/", damp_dir="../data/damp/", 
                 fname = fname.replace(".txt", params)
                 dmap["fname"].append(fname)
                 dmap["obj"].append(o)
-            break
-
+                dmap["params"].append({"start": -1, "end": -1, "peak": 0., "swf_flag": False})
+    df = pd.DataFrame.from_records(dmap["params"])
+    df["fname"] = dmap["fname"]
+    print(df.head())
+    train, validate, test = np.split(df.sample(frac=1), [int(.7*len(df)), int(.85*len(df))])
+    print(" Train %d, Test %d, Validation %d"%(len(train), len(test), len(validate)))
+    for ax, _dir_ in zip([train, validate, test], [train_dir, validation_dir, test_dir]):
+        for i, row in ax.iterrows():
+            o = dmap["obj"][i]
+            fname = row["fname"]
+            floc = _dir_ + "%06d.txt"%i
+            np.savetxt(floc, o)
+    train.to_csv("../data/train_source.csv", header=True, index=False)
+    test.to_csv("../data/test_source.csv", header=True, index=False)
+    validate.to_csv("../data/validation_source.csv", header=True, index=False)
     return
 
 if __name__ == "__main__":
@@ -129,4 +150,6 @@ if __name__ == "__main__":
         if case==2: generate_backscatter_echoes()
         if case==3: generate_backscatter_damp_function()
         if case==4: create_train_test_dataset()
+    os.system("rm -rf *log*")
+    os.system("rm -rf __pycache__")
     pass
