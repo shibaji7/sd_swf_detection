@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import glob
 from scipy.stats import median_absolute_deviation
+from scipy.signal import butter, lfilter
 import traceback
 
 from get_fit_data import get_date_by_dates
@@ -90,12 +91,24 @@ class Detector(object):
                 self.invoke_parser()
         return
 
-    def invoke_parser(self):
+    def scheme(self):
         """ Needs to be overloaded """
         return
 
-    def scheme(self):
-        """ Needs to be overloaded """
+    def invoke_parser(self):
+        """ May need to be overloaded """
+        self.records = []
+        if len(self.df) > 0:
+            stats = self.df.groupby(by=["st"]).agg({"prob":[np.median, "count", median_absolute_deviation]}).reset_index()
+            L = 1./len(self.beams)
+            for i in range(len(stats)):
+                st, et = stats.iloc[i]["st"].tolist()[0], stats.iloc[i]["st"].tolist()[0] + dt.timedelta(minutes=120)
+                mprob, cprob = stats.iloc[i]["prob"]["median"], stats.iloc[i]["prob"]["count"]*L
+                mad = stats.iloc[i]["prob"]["median_absolute_deviation"]
+                jscore = -10*np.log10(stats.iloc[i]["prob"]["median_absolute_deviation"]) if mad > 0. else -1
+                self.records.append({"st": st, "et": et, "rad": self.rad, "mprob": mprob, "jscore": jscore, "cprob": cprob})
+                print(" Chance of SWF between (%s, %s) observed by %s radar is (%.2f, %.2f, %.2f)"%(st.strftime("%Y-%m-%d %H:%M"),
+                    et.strftime("%Y-%m-%d %H:%M"), self.rad.upper(), mprob, cprob, jscore))
         return
 
     def save(self):
@@ -107,7 +120,7 @@ class ZScore(Detector):
     """ Whitaker-Hayes algorithm: Z Score based method """
 
     def __init__(self,  dates, rad, plot=True):
-        super().__init__(dates, rad, "z_score", plot)
+        super().__init__(dates, rad, "zscore", plot)
         self.threshold = properties["z_score_threshold"]
         return
 
@@ -130,7 +143,7 @@ class ZScore(Detector):
                     dist = intensity[i+1] - intensity[i]
                     delta_intensity.append(dist)
                 delta_int = np.array(delta_intensity)
-                scores = self.modified_z_score(delta_int)
+                scores = np.array(self.modified_z_score(delta_int).tolist() + [0])
                 n_spikes = np.count_nonzero(np.abs(np.array(scores)) > self.threshold)
                 p = 0.
                 if self.plot:
@@ -139,34 +152,106 @@ class ZScore(Detector):
                     plotlib.plot_fit_data_with_scores(u, scores, self.plot_fname)
                 if n_spikes > 0: p = 1./(1.+np.exp(-np.abs(scores).max()))
                 obj = {"beam":b, "st": st, "et": et, "prob": p}
-                coll.append({"beam":b, "st": st, "et": et, "prob": p})
+                coll.append(obj)
             st = et
             et += dt.timedelta(minutes=dur)
         return coll
 
-    def invoke_parser(self):
-        """ Overloaded """
-        self.records = []
-        if len(self.df) > 0:
-            stats = self.df.groupby(by=["st"]).agg({"prob":[np.median, "count", median_absolute_deviation]}).reset_index()
-            L = 1./len(self.beams)
-            for i in range(len(stats)):
-                st, et = stats.iloc[i]["st"].tolist()[0], stats.iloc[i]["st"].tolist()[0] + dt.timedelta(minutes=120)
-                mprob, cprob = stats.iloc[i]["prob"]["median"], stats.iloc[i]["prob"]["count"]*L
-                mad = stats.iloc[i]["prob"]["median_absolute_deviation"]
-                jscore = -10*np.log10(stats.iloc[i]["prob"]["median_absolute_deviation"]) if mad > 0. else -1
-                self.records.append({"st": st, "et": et, "rad": self.rad, "mprob": mprob, "jscore": jscore, "cprob": cprob})
-                print(" Chance of SWF between (%s, %s) observed by %s radar is (%.2f, %.2f, %.2f)"%(st.strftime("%Y-%m-%d %H:%M"),
-                                    et.strftime("%Y-%m-%d %H:%M"), self.rad.upper(), mprob, cprob, jscore))
+class CascadingNEO(Detector):
+    """ Nonlinear Energy Operator: NEO, Implemented from 'Holleman2011.Chapter.SpikeDetection_Characterization' """
+
+    def __init__(self,  dates, rad, plot=True):
+        super().__init__(dates, rad, "neo", plot)
+        self.threshold = properties["neo_threshold"]
+        self.neo_order = properties["neo_order"]
         return
 
-def algorithm_runner_helper(dates, rad, kind, plot=True):
-    if kind == "z_score": method = ZScore(dates, rad, plot)
+    def neo(self, x):
+        """
+            neo(x): diff(x,2)-x.diff(x,1)
+            Implemented from "Holleman2011.Chapter.SpikeDetection_Characterization"
+        """
+        y = np.gradient(x,edge_order=1)**2 - (np.gradient(x,edge_order=2)*x)
+        return y
+
+    def scheme(self, x, start, end, b, dur):
+        """ Overloaded """
+        st, et = start, start + dt.timedelta(minutes=dur)
+        coll = []
+        while et <= end:
+            u = x[(x.time >= st) & (x.time < et)]
+            if len(u) == dur and not u.isnull().values.any():
+                scores = np.array(u.echoes)
+                for _i in range(self.neo_order):
+                    scores = self.neo(scores)
+                n_spikes = np.count_nonzero(np.abs(np.array(scores)) > self.threshold)
+                p = 0.
+                if self.plot:
+                    self.plot_fname = "../plots/rad_summary_%s_%s_%s_%02d.png"%(st.strftime("%Y-%m-%d-%H-%M"),
+                            et.strftime("%Y-%m-%d-%H-%M"), self.rad, b)
+                    plotlib.plot_fit_data_with_scores(u, scores, self.plot_fname)
+                if n_spikes > 0: p = 1./(1.+np.exp(-(np.abs(scores).max()-self.threshold)/(10**self.neo_order)))
+                obj = {"beam":b, "st": st, "et": et, "prob": p}
+                coll.append(obj)
+            st = et
+            et += dt.timedelta(minutes=dur)
+        return coll
+
+class Butterworth(Detector):
+    """ 
+        Python outlier detectors using Butterworth filter
+    """
+
+    def __init__(self,  dates, rad, plot=True):
+        super().__init__(dates, rad, "butter", plot)
+        self.threshold = properties["butter_threshold"]
+        self.high = properties["butter_high"]
+        self.low = properties["butter_low"]
+        self.order = properties["butter_order"]
+        self.sf = properties["butter_sf"]
+        return
+
+    def filter_data(self, x):
+        # Determine Nyquist frequency
+        nyq = self.sf/2
+        # Set bands
+        low = self.low/nyq
+        high = self.high/nyq
+        # Calculate coefficients
+        b, a = butter(self.order, [low, high], btype="band")
+        # Filter signal
+        filtered_data = lfilter(b, a, x)
+        return filtered_data
+
+    def scheme(self, x, start, end, b, dur):
+        """ Overloaded """
+        st, et = start, start + dt.timedelta(minutes=dur)
+        coll = []
+        while et <= end:
+            u = x[(x.time >= st) & (x.time < et)]
+            if len(u) == dur and not u.isnull().values.any():
+                scores = self.filter_data(np.array(u.echoes))
+                scores[scores>0.] = 0.
+                p = 1./(1.+np.exp(scores.min()-self.threshold))
+                if self.plot:
+                    self.plot_fname = "../plots/rad_summary_%s_%s_%s_%02d.png"%(st.strftime("%Y-%m-%d-%H-%M"),
+                            et.strftime("%Y-%m-%d-%H-%M"), self.rad, b)
+                    plotlib.plot_fit_data_with_scores(u, scores, self.plot_fname)
+                obj = {"beam":b, "st": st, "et": et, "prob": p}
+                coll.append(obj)
+            st = et
+            et += dt.timedelta(minutes=dur)
+        return coll
+
+def algorithm_runner_helper(dates, rad, kind, plot=True, save=True):
+    if kind == "zscore": method = ZScore(dates, rad, plot)
+    if kind == "neo": method = CascadingNEO(dates, rad, plot)
+    if kind == "butter": method = Butterworth(dates, rad, plot)
     method.run()
-    method.save()
+    if save: method.save()
     return
 
-def run_parallel_procs(dates, rad, kind="z_score", plot=True, procs=8):
+def run_parallel_procs(dates, rad, kind="zscore", plot=True, save=True, procs=8):
     from multiprocessing import Pool
     from functools import partial
     dt_args = []
@@ -175,9 +260,9 @@ def run_parallel_procs(dates, rad, kind="z_score", plot=True, procs=8):
     while sdate <= edate:
         dt_args.append([sdate, sdate + dt.timedelta(1)])
         sdate = sdate + dt.timedelta(1)
-    pool.map(partial(algorithm_runner_helper, rad=rad, kind=kind, plot=plot), dt_args)
+    pool.map(partial(algorithm_runner_helper, rad=rad, kind=kind, plot=plot, save=True), dt_args)
     return
 
 if __name__ == "__main__":
-    run_parallel_procs([dt.datetime(2015,3,1), dt.datetime(2015,3,31)], "bks", "z_score", False)
+    run_parallel_procs([dt.datetime(2015,3,11), dt.datetime(2015,3,11)], "bks", "butter", False, False)
     pass

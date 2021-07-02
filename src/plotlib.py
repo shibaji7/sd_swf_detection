@@ -65,7 +65,7 @@ def plot_fit_data_with_scores(u, scores, fname):
     ax = ax.twinx()
     ax.set_ylabel("score")
     ax.xaxis.set_major_formatter(fmt)
-    ax.plot(u.time.tolist()[:-1], scores, marker="o", ls="None", ms=1., color="r", alpha=0.5)
+    ax.plot(u.time.tolist(), scores, marker="o", ls="None", ms=1., color="r", alpha=0.5)
     ax.set_xlim(u.time.tolist()[0],u.time.tolist()[-1])
     fig.savefig(fname, bbox_inches="tight")
     return
