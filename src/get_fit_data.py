@@ -18,8 +18,11 @@ import glob
 import bz2
 import pydarnio as pydarn
 import configparser
+import pydarn as pdrn
 
+from pysolar.solar import get_altitude
 
+import rad_fov
 
 def to_normal_scan_id(d, key="scan"):
     """ Convert to normal scan code """
@@ -348,14 +351,32 @@ def beam_summary(rad, start, end):
     fd = FetchData(rad, [start, end])
     b, _ = fd.fetch_data()
     d = fd.to_pandas_summary(b)
-    print(d[cols].head(15))
     to_normal_scan_id(d, key="scan")
     dur = _estimate_scan_duration(d)
-    print(dur)
     themis = _estimate_themis_beam(dur, d)
     d[cols].to_csv("data/{rad}.{dn}.{start}.{end}.csv".format(rad=rad, dn=start.strftime("%Y%m%d"),
         start=start.strftime("%H%M"), end=end.strftime("%H%M")), header=True, index=False)
     return {"s_time": dur, "t_beam": themis}
+
+def get_date_by_dates(rad, dates):
+    fd = FetchData(rad, dates)
+    _, scans = fd.fetch_data(by="scan")
+    times, beams, echoes = [], [], []
+    for s in scans:
+        for b in s.beams:
+            times.append(b.time)
+            beams.append(b.bmnum)
+            if len(b.slist) > 0:
+                slist = np.array(b.slist)
+                echoes.append(len(b.v[np.logical_and((slist>=20), (slist<=60))]))
+            else: echoes.append(0)
+    u = pd.DataFrame()
+    u["time"], u["beams"], u["echoes"] = times, beams, echoes
+    hdw = pdrn.read_hdw_file(rad)
+    rfov = rad_fov.CalcFov(hdw=hdw, ngates=75)
+    lat, lon = rfov.latFull.mean(), rfov.lonFull.mean()
+    u["sza"] = [90.-get_altitude(lat, lon, d.replace(tzinfo=dt.timezone.utc)) for d in u.time]
+    return u
 
 if __name__ == "__main__":
     fdata = FetchData( "sas", [dt.datetime(2015,3,17,3),

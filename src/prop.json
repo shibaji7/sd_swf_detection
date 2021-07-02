@@ -1,0 +1,12 @@
+{
+	"sza_th": 105.0,
+	"methods": ["z_score"],
+	"smoothing_window": 11,
+	"dur": 120,
+	"data_fname": "../data/%s_%s.csv",
+	"result_fname": "../results/%s_%s_%s.csv",
+	"plot_fname": "../plots/rad_summary_%s_%s_%s_%02d.png",
+	"resample_time": "1T",
+	"max_intrepolate_gap": 2,
+	"z_score_threshold": 5
+}
