@@ -378,6 +378,7 @@ def get_date_by_dates(rad, dates):
     u["sza"] = [90.-get_altitude(lat, lon, d.replace(tzinfo=dt.timezone.utc)) for d in u.time]
     return u
 
+
 if __name__ == "__main__":
     fdata = FetchData( "sas", [dt.datetime(2015,3,17,3),
         dt.datetime(2015,3,17,3,20)] )

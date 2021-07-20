@@ -10,6 +10,7 @@ data/*
 plots/*
 results/*
 goes/*
+regressor/*
 *.png
 *.txt
 *.csv
